@@ -80,6 +80,7 @@ BTN_MATERIALS = "📚 Получить материалы"
 BTN_LEAD = "📝 Оставить заявку"
 BTN_ABOUT = "ℹ️ О нас"
 BTN_CANCEL = "❌ Отмена"
+BTN_FINISH_LEAD = "✅ Завершить заявку"
 
 KIND_LABELS = {"document": "📄 файл", "photo": "🖼 фото", "video": "🎬 видео", "text": "📝 текст/ссылка"}
 
@@ -310,7 +311,17 @@ def cancel_menu() -> ReplyKeyboardMarkup:
 
 def phone_menu() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
-        keyboard=[[KeyboardButton(text="📱 Отправить мой телефон", request_contact=True)], [KeyboardButton(text=BTN_CANCEL)]],
+        keyboard=[
+            [KeyboardButton(text="📱 Поделиться телефоном", request_contact=True)],
+            [KeyboardButton(text=BTN_CANCEL)],
+        ],
+        resize_keyboard=True,
+    )
+
+
+def lead_task_menu() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        keyboard=[[KeyboardButton(text=BTN_FINISH_LEAD)], [KeyboardButton(text=BTN_CANCEL)]],
         resize_keyboard=True,
     )
 
@@ -633,7 +644,8 @@ async def broadcast_run(message: Message, state: FSMContext):
 async def lead_start(message: Message, state: FSMContext):
     await state.set_state(LeadForm.name)
     await message.answer(
-        "📝 Оставим заявку! Это займёт минуту.\n\n<b>Шаг 1 из 3.</b> Как тебя зовут?",
+        "📝 <b>Оставить заявку</b>\n\n"
+        "<b>Шаг 1 из 3.</b> Как к вам обращаться?",
         reply_markup=cancel_menu(),
     )
 
@@ -642,12 +654,16 @@ async def lead_start(message: Message, state: FSMContext):
 async def lead_name(message: Message, state: FSMContext):
     name = message.text.strip()
     if len(name) < 2:
-        await message.answer("Слишком короткое имя. Напиши, как к тебе обращаться 🙂")
+        await message.answer("Напишите, пожалуйста, как к вам обращаться.")
         return
+
     await state.update_data(name=name)
     await state.set_state(LeadForm.phone)
     await message.answer(
-        f"Приятно, {name}!\n\n<b>Шаг 2 из 3.</b> Оставь телефон — кнопкой ниже или вручную.",
+        f"Приятно, {name}!\n\n"
+        "<b>Шаг 2 из 3.</b> Оставьте удобный способ связи.\n\n"
+        "Можно нажать кнопку ниже и поделиться телефоном "
+        "или написать вручную: телефон, Telegram, WhatsApp — как удобнее.",
         reply_markup=phone_menu(),
     )
 
@@ -655,39 +671,109 @@ async def lead_name(message: Message, state: FSMContext):
 @dp.message(LeadForm.phone)
 async def lead_phone(message: Message, state: FSMContext):
     if message.contact:
-        phone = message.contact.phone_number
+        contact = message.contact.phone_number
     elif message.text:
-        phone = message.text.strip()
+        contact = message.text.strip()
     else:
-        await message.answer("Пришли номер телефона текстом или кнопкой 👇")
+        await message.answer("Пришлите контакт текстом или нажмите «📱 Поделиться телефоном».")
         return
-    await state.update_data(phone=phone)
+
+    if len(contact) < 3:
+        await message.answer("Слишком коротко. Напишите телефон, Telegram или другой удобный способ связи.")
+        return
+
+    await state.update_data(phone=contact, lead_items=[], lead_message_ids=[])
     await state.set_state(LeadForm.comment)
-    await message.answer("<b>Шаг 3 из 3.</b> Коротко опиши, что нужно (какой сайт / задача).", reply_markup=cancel_menu())
+    await message.answer(
+        "<b>Шаг 3 из 3.</b> Опишите задачу и прикрепите всё, что может пригодиться.\n\n"
+        "Можно отправить текст, голосовое, файл, фото, ссылку на текущий сайт, "
+        "ТЗ, примеры сайтов или сайты конкурентов.\n\n"
+        "Можно отправить несколько сообщений. Когда закончите — нажмите «✅ Завершить заявку».",
+        reply_markup=lead_task_menu(),
+    )
 
 
-@dp.message(LeadForm.comment, F.text)
-async def lead_comment(message: Message, state: FSMContext):
+def lead_item_summary(message: Message) -> str:
+    if message.text:
+        return message.text.strip()
+    if message.voice:
+        return "Голосовое сообщение"
+    if message.document:
+        filename = message.document.file_name or "документ"
+        caption = f" — {message.caption.strip()}" if message.caption else ""
+        return f"Файл: {filename}{caption}"
+    if message.photo:
+        caption = f": {message.caption.strip()}" if message.caption else ""
+        return f"Фото / изображение{caption}"
+    if message.video:
+        caption = f": {message.caption.strip()}" if message.caption else ""
+        return f"Видео{caption}"
+    if message.audio:
+        caption = f": {message.caption.strip()}" if message.caption else ""
+        return f"Аудио{caption}"
+    return "Материал без текста"
+
+
+@dp.message(LeadForm.comment, F.text == BTN_FINISH_LEAD)
+async def lead_finish(message: Message, state: FSMContext):
     data = await state.get_data()
-    name, phone = data.get("name", "—"), data.get("phone", "—")
-    comment = message.text.strip()
+    name = data.get("name", "—")
+    contact = data.get("phone", "—")
+    items = data.get("lead_items", [])
+    message_ids = data.get("lead_message_ids", [])
+
+    if not items:
+        await message.answer(
+            "Сначала отправьте описание задачи или материалы, потом нажмите «✅ Завершить заявку».",
+            reply_markup=lead_task_menu(),
+        )
+        return
+
+    comment = "\n".join(f"• {item}" for item in items)
     await state.clear()
 
-    save_lead(message.from_user.id, message.from_user.username, name, phone, comment)
+    save_lead(message.from_user.id, message.from_user.username, name, contact, comment)
 
     uname = f"@{message.from_user.username}" if message.from_user.username else "без username"
     admin_text = (
         "🆕 <b>Новая заявка!</b>\n\n"
-        f"👤 Имя: {name}\n📞 Телефон: {phone}\n💬 Запрос: {comment}\n\n"
+        f"👤 Имя: {name}\n"
+        f"📞 Связь: {contact}\n"
+        f"💬 Задача / материалы:\n{comment}\n\n"
         f"От: {uname} (id <code>{message.from_user.id}</code>)"
     )
+
     for admin in ADMIN_IDS:
         try:
             await bot.send_message(admin, admin_text)
+            for mid in message_ids:
+                await bot.copy_message(
+                    chat_id=admin,
+                    from_chat_id=message.chat.id,
+                    message_id=mid,
+                )
+                await asyncio.sleep(0.05)
         except Exception as e:
             logger.error(f"Не смог отправить заявку админу {admin}: {e}")
 
-    await message.answer("✅ Готово! Заявка принята, скоро свяжемся. Спасибо 🙌", reply_markup=main_menu())
+    await message.answer("✅ Заявка принята! Мы посмотрим задачу и скоро свяжемся.", reply_markup=main_menu())
+
+
+@dp.message(LeadForm.comment)
+async def lead_collect_item(message: Message, state: FSMContext):
+    data = await state.get_data()
+    items = data.get("lead_items", [])
+    message_ids = data.get("lead_message_ids", [])
+
+    summary = lead_item_summary(message)
+    items.append(summary)
+    message_ids.append(message.message_id)
+
+    await state.update_data(lead_items=items, lead_message_ids=message_ids)
+    await message.answer(
+        "Принял. Можно отправить ещё описание/материалы или нажать «✅ Завершить заявку».",
+        reply_markup=lead_task_menu(),
+    )
 
 
 # ============== МАТЕРИАЛЫ / О НАС (для всех) ==============
