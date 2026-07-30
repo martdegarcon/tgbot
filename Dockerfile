@@ -7,4 +7,4 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
-CMD ["python", "subscription_bot_pdf.py"]
+CMD ["python", "free_site_bot.py"]
